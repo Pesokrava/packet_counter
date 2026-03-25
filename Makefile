@@ -11,7 +11,7 @@
 #   (inside VM) make run
 # =============================================================================
 
-.PHONY: help vm-up vm-shell vm-down vm-destroy build build-ebpf build-web build-all check fmt lint run run-release dev clean
+.PHONY: help vm-up vm-shell vm-down vm-destroy build build-ebpf build-web build-all check fmt lint run run-release dev dev-backend dev-frontend clean
 
 # Default target
 help:
@@ -33,7 +33,9 @@ help:
 	@echo "    make run         Build and run with sudo; passes --static-dir web/dist if it exists"
 	@echo "    make run IFACE=ens3 SKB=1        Run on a specific interface in SKB mode"
 	@echo "    make run PORT=8080               Override the HTTP listen port"
-	@echo "    make dev         Run Vite dev server + Rust backend concurrently"
+	@echo "    make dev         Start backend in VM + Vite on host (from macOS host)"
+	@echo "    make dev-backend Start only the Rust backend (run inside the VM)"
+	@echo "    make dev-frontend Start only the Vite dev server (run on macOS host)"
 	@echo "    make clean       Remove build artifacts and web/dist/"
 	@echo ""
 
@@ -134,15 +136,35 @@ build-all: build-web build
 # Dev mode (frontend proxies /api to the Rust backend on :3001)
 # ---------------------------------------------------------------------------
 
-# Run the Vite dev server and the Rust backend concurrently.
-# The Vite proxy config (web/vite.config.ts) forwards /api requests to :3001.
-# Press Ctrl-C to stop both processes.
-dev: build
+# VM name used by limactl (matches --name passed to limactl start).
+VM_NAME ?= packet-counter-dev
+
+# Start the Rust backend inside the Lima VM (forwarded to host :3001) and
+# run the Vite dev server on the macOS host.  The Vite proxy config
+# (web/vite.config.ts) forwards /api requests to localhost:3001.
+#
+# Run each command in a separate terminal, or background the VM command:
+#   Terminal 1 (inside VM):  make dev-backend
+#   Terminal 2 (host):       make dev-frontend
+#
+# Or run both from the host with:
+#   make dev
+#
+dev:
+	limactl shell $(VM_NAME) -- bash -lc \
+		'cd $(shell pwd) && make dev-backend' &
+	npm --prefix web run dev
+
+# Build and start only the Rust backend (run this inside the VM).
+dev-backend: build
 	./run-privileged.sh \
 		"$${CARGO_TARGET_DIR:-target}/$(TARGET)/debug/packet-counter" \
 		--iface $(IFACE) $(SKB_FLAG) \
-		--listen "0.0.0.0:$(PORT)" &
-	cd web && npm run dev
+		--listen "0.0.0.0:$(PORT)"
+
+# Start only the Vite dev server (run this on the macOS host).
+dev-frontend:
+	npm --prefix web run dev
 
 # ---------------------------------------------------------------------------
 # Clean

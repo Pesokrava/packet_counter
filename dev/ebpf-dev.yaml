@@ -66,17 +66,16 @@ ssh:
   forwardAgent: true
 
 # ---------------------------------------------------------------------------
-# Port forwarding — expose the packet-counter HTTP server and the Vite dev
-# server on the macOS host's localhost so that the browser and curl work
-# without entering the VM.
+# Port forwarding — expose the Axum HTTP server on the macOS host's
+# localhost so that the browser and curl work without entering the VM.
 #
-#   :3001  — Axum REST API / full production server (make run)
-#   :5173  — Vite dev server hot-reload port (make dev → npm run dev)
+#   :3001  — Axum REST API / full production server (make run / make dev-backend)
+#
+# The React frontend (Vite) runs directly on the macOS host; no forwarding
+# needed for port 5173.
 # ---------------------------------------------------------------------------
 portForwards:
   - guestPort: 3001
-    hostIP: "127.0.0.1"
-  - guestPort: 5173
     hostIP: "127.0.0.1"
 
 # ---------------------------------------------------------------------------
