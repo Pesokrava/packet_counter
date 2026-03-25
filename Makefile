@@ -6,12 +6,11 @@
 # The VM targets (vm-*) run on the macOS host.
 #
 # Quick start:
+#   make vm-run     — create/start VM and run the program (from macOS host)
 #   make vm-shell   — create/start VM and open an interactive shell
-#   (inside VM) make build
-#   (inside VM) make run
 # =============================================================================
 
-.PHONY: help vm-up vm-shell vm-down vm-destroy build build-ebpf build-web build-all check fmt lint run run-release dev dev-backend dev-frontend clean
+.PHONY: help vm-up vm-shell vm-down vm-destroy vm-run vm-run-release build build-ebpf build-web build-all check fmt lint run run-release dev dev-backend dev-frontend clean
 
 # Default target
 help:
@@ -19,6 +18,8 @@ help:
 	@echo "  packet_counter — Makefile targets"
 	@echo ""
 	@echo "  VM management (run on macOS host):"
+	@echo "    make vm-run      Create/start VM, build, and run the program"
+	@echo "    make vm-run-release  Same but with --release"
 	@echo "    make vm-shell    Create/start the Lima VM and open a shell"
 	@echo "    make vm-down     Stop the VM (preserves disk state)"
 	@echo "    make vm-destroy  Stop and permanently delete the VM"
@@ -43,6 +44,9 @@ help:
 # VM management (macOS host)
 # ---------------------------------------------------------------------------
 
+# VM name used by limactl (matches --name passed to limactl start).
+VM_NAME ?= packet-counter-dev
+
 # Create the VM on first run, start if stopped, then open an interactive shell.
 vm-shell:
 	./dev/dev.sh
@@ -57,6 +61,20 @@ vm-down:
 # Stop and permanently delete the VM and all its data.
 vm-destroy:
 	./dev/teardown.sh --destroy
+
+# Create/start the VM (if needed) then build and run the program inside it.
+# Ctrl-C stops the program; the VM keeps running.
+# Override defaults:  make vm-run IFACE=ens3 PORT=8080 SKB=1
+vm-run:
+	./dev/dev.sh --no-shell
+	limactl shell $(VM_NAME) -- bash -lc \
+		'cd $(shell pwd) && make run IFACE=$(IFACE) PORT=$(PORT) SKB=$(SKB)'
+
+# Same as vm-run but with a release build.
+vm-run-release:
+	./dev/dev.sh --no-shell
+	limactl shell $(VM_NAME) -- bash -lc \
+		'cd $(shell pwd) && make run-release IFACE=$(IFACE) PORT=$(PORT) SKB=$(SKB)'
 
 # ---------------------------------------------------------------------------
 # Build targets (run inside the Lima VM)
@@ -135,11 +153,6 @@ build-all: build-web build
 # ---------------------------------------------------------------------------
 # Dev mode (frontend proxies /api to the Rust backend on :3001)
 # ---------------------------------------------------------------------------
-
-# VM name used by limactl (matches --name passed to limactl start).
-VM_NAME ?= packet-counter-dev
-
-# Start the Rust backend inside the Lima VM (forwarded to host :3001) and
 # run the Vite dev server on the macOS host.  The Vite proxy config
 # (web/vite.config.ts) forwards /api requests to localhost:3001.
 #

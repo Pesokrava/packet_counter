@@ -2,8 +2,8 @@
 # ebpf-dev.yaml — Lima VM for eBPF / Aya development on macOS
 #
 # Creates a native ARM64 Ubuntu 24.04 VM with the full Rust + bpf-linker
-# toolchain, Node.js (for the React frontend), and standard dev tools
-# (neovim, lazygit, opencode, fzf, etc.) pre-installed.
+# toolchain and Node.js (for the React frontend). Minimal setup — just enough
+# to build and run the project.
 #
 # Source code lives on the macOS filesystem (accessed via VirtioFS at the same
 # absolute path), while cargo build artifacts are written to a VM-local
@@ -18,13 +18,6 @@
 # Direct limactl usage:
 #   limactl start ./dev/ebpf-dev.yaml --name=packet-counter-dev
 #   limactl shell packet-counter-dev
-#
-# Prerequisites (one-time on macOS):
-#   Create ~/.env.llm with your LLM API key exports, e.g.:
-#     export ANTHROPIC_API_KEY=sk-ant-...
-#     export OPENAI_API_KEY=sk-...
-#   Add to ~/.zshrc:
-#     source ~/.env.llm
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -53,7 +46,7 @@ images:
 
 # ---------------------------------------------------------------------------
 # Mounts — expose the macOS home directory inside the VM at the same absolute
-# path. writable: true is required so neovim, git, and cargo can write files.
+# path. writable: true is required so git, cargo, and npm can write files.
 # ---------------------------------------------------------------------------
 mounts:
   - location: "~"
@@ -123,12 +116,7 @@ provision:
       apt-get install -y --no-install-recommends \
         git \
         curl \
-        unzip \
         jq \
-        ripgrep \
-        fd-find \
-        tree \
-        tmux \
         netcat-openbsd
 
       # -----------------------------------------------------------------------
@@ -136,56 +124,6 @@ provision:
       # -----------------------------------------------------------------------
       curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
       apt-get install -y --no-install-recommends nodejs
-
-      # -----------------------------------------------------------------------
-      # fzf — install latest from GitHub (apt ships an outdated version)
-      # -----------------------------------------------------------------------
-      FZF_VERSION=$(curl -s https://api.github.com/repos/junegunn/fzf/releases/latest \
-        | jq -r '.tag_name | ltrimstr("v")')
-      curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_arm64.tar.gz" \
-        | tar -C /usr/local/bin -xz fzf
-      echo "fzf ${FZF_VERSION} installed."
-
-      # -----------------------------------------------------------------------
-      # StyLua — Lua formatter used by LazyVim
-      # -----------------------------------------------------------------------
-      STYLUA_VERSION=$(curl -s https://api.github.com/repos/JohnnyMorganz/StyLua/releases/latest \
-        | jq -r '.tag_name')
-      curl -fsSL "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VERSION}/stylua-linux-aarch64.zip" \
-        -o /tmp/stylua.zip
-      unzip -q /tmp/stylua.zip -d /usr/local/bin/
-      chmod +x /usr/local/bin/stylua
-      rm /tmp/stylua.zip
-
-      # -----------------------------------------------------------------------
-      # lazygit — used by LazyVim's built-in git UI
-      # -----------------------------------------------------------------------
-      LAZYGIT_VERSION=$(curl -s https://api.github.com/repos/jesseduffield/lazygit/releases/latest \
-        | jq -r '.tag_name | ltrimstr("v")')
-      curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_arm64.tar.gz" \
-        -o /tmp/lazygit.tar.gz
-      tar -C /usr/local/bin -xzf /tmp/lazygit.tar.gz lazygit
-      rm /tmp/lazygit.tar.gz
-
-      # -----------------------------------------------------------------------
-      # Neovim — install latest stable from GitHub releases
-      # -----------------------------------------------------------------------
-      NVIM_VERSION=$(curl -s https://api.github.com/repos/neovim/neovim/releases/latest \
-        | jq -r '.tag_name')
-      if [ -n "${NVIM_VERSION}" ] && \
-         curl -fsSL "https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-arm64.tar.gz" \
-           -o /tmp/nvim.tar.gz 2>/dev/null; then
-        tar -C /opt -xzf /tmp/nvim.tar.gz
-        ln -sf /opt/nvim-linux-arm64/bin/nvim /usr/local/bin/nvim
-        rm /tmp/nvim.tar.gz
-        echo "Neovim ${NVIM_VERSION} installed from GitHub."
-      else
-        echo "GitHub download failed — falling back to apt neovim."
-        add-apt-repository -y ppa:neovim-ppa/unstable
-        apt-get update -qq
-        apt-get install -y --no-install-recommends neovim
-      fi
-      nvim --version | head -1
 
       # Make cargo-installed binaries available system-wide for sudo invocations
       # (bpf-linker is installed as the user but must be on root's PATH)
@@ -232,17 +170,7 @@ provision:
       cargo install bpf-linker
 
       # -----------------------------------------------------------------------
-      # 3. OpenCode
-      # -----------------------------------------------------------------------
-      curl -fsSL https://opencode.ai/install | bash
-
-      # -----------------------------------------------------------------------
-      # 4. rust-analyzer — via rustup for the nightly toolchain
-      # -----------------------------------------------------------------------
-      rustup component add rust-analyzer
-
-      # -----------------------------------------------------------------------
-      # 5. Shell profile — append to ~/.bashrc (idempotent via guard comment)
+      # 3. Shell profile — append to ~/.bashrc (idempotent via guard comment)
       # -----------------------------------------------------------------------
       if ! grep -q '# >>> packet-counter-dev <<<' "$HOME/.bashrc" 2>/dev/null; then
         printf '%s\n' \
@@ -260,17 +188,9 @@ provision:
           '# Default log level — override per-invocation with RUST_LOG=debug' \
           'export RUST_LOG="${RUST_LOG:-info}"' \
           '' \
-          '# LLM API keys from macOS-side file accessible via VirtioFS.' \
-          "[ -f \"${MACOS_HOME}/.env.llm\" ] && source \"${MACOS_HOME}/.env.llm\"" \
-          '' \
-          '# Vim motions in bash' \
-          'set -o vi' \
-          '' \
           '# Start in the project directory' \
           "[ -d \"${PROJECT_DIR}\" ] && cd \"${PROJECT_DIR}\"" \
           'export LIMA_INSTANCE=yes' \
-          'alias vi="nvim"' \
-          'export EDITOR=nvim' \
           '# <<< packet-counter-dev <<<' \
           >> "$HOME/.bashrc"
       fi
@@ -281,13 +201,9 @@ provision:
       echo ""
       echo "  Toolchain:"
       rustup show active-toolchain 2>/dev/null || true
-      echo "  bpf-linker:    $(bpf-linker --version 2>/dev/null || echo 'installed')"
-      echo "  rust-analyzer: $(rust-analyzer --version 2>/dev/null || echo 'installed via rustup')"
-      echo "  neovim:        $(nvim --version 2>/dev/null | head -1 || echo 'installed')"
-      echo "  opencode:      $(opencode --version 2>/dev/null || echo 'installed')"
-      echo "  lazygit:       $(lazygit --version 2>/dev/null | head -1 || echo 'installed')"
-      echo "  node:          $(node --version 2>/dev/null || echo 'installed')"
-      echo "  npm:           $(npm --version 2>/dev/null || echo 'installed')"
+      echo "  bpf-linker: $(bpf-linker --version 2>/dev/null || echo 'installed')"
+      echo "  node:       $(node --version 2>/dev/null || echo 'installed')"
+      echo "  npm:        $(npm --version 2>/dev/null || echo 'installed')"
       echo ""
       echo "  Usage:"
       echo "    make vm-shell   — enter the VM"
