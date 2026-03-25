@@ -1,0 +1,228 @@
+/* Reset & base */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --border: #2a2d3a;
+  --text: #e2e8f0;
+  --text-muted: #8892a4;
+  --accent: #4f9cf9;
+  --tcp: #38bdf8;
+  --udp: #a78bfa;
+  --ok: #4ade80;
+  --error: #f87171;
+  --warn: #fbbf24;
+  --radius: 6px;
+  --font: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* App layout */
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  margin-right: auto;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.last-updated {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Status badge */
+.status-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.status-ok      { background: rgba(74, 222, 128, 0.15); color: var(--ok); border: 1px solid rgba(74, 222, 128, 0.3); }
+.status-error   { background: rgba(248, 113, 113, 0.15); color: var(--error); border: 1px solid rgba(248, 113, 113, 0.3); }
+.status-connecting { background: rgba(251, 191, 36, 0.15); color: var(--warn); border: 1px solid rgba(251, 191, 36, 0.3); }
+
+/* Buttons */
+button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 4px 14px;
+  transition: background 0.15s, border-color 0.15s;
+}
+button:hover:not(:disabled) {
+  background: var(--border);
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.toggle-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Main content */
+.app-main {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.section h2 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+.empty-msg {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Protocol badge */
+.proto-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: var(--radius);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-right: 6px;
+}
+.proto-tcp { background: rgba(56, 189, 248, 0.15); color: var(--tcp); border: 1px solid rgba(56, 189, 248, 0.3); }
+.proto-udp { background: rgba(167, 139, 250, 0.15); color: var(--udp); border: 1px solid rgba(167, 139, 250, 0.3); }
+
+/* Bar chart */
+.bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 80px;
+  align-items: center;
+  gap: 10px;
+}
+
+.bar-label {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+}
+
+.bar-track {
+  background: var(--border);
+  border-radius: 3px;
+  height: 14px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.bar-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* Stats table */
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.stats-table th, .stats-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.stats-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--surface);
+}
+
+.stats-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.stats-table th.sortable:hover {
+  color: var(--text);
+}
+
+.stats-table tr:hover td {
+  background: rgba(255,255,255,0.03);
+}
+
+.stats-table td.num {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.sort-inactive { color: var(--text-muted); opacity: 0.4; }
+.sort-active   { color: var(--accent); }
