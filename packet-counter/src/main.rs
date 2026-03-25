@@ -1,6 +1,18 @@
-use std::time::Duration;
+//! Userspace eBPF loader + Axum HTTP server.
+//!
+//! Responsibilities:
+//!   1. Load the compiled XDP program and attach it to a network interface.
+//!   2. Run a background task that periodically reads `PACKET_COUNTS` from
+//!      the BPF map and caches the aggregated stats behind an `Arc<RwLock<>>`.
+//!   3. Serve an Axum HTTP API on `0.0.0.0:3001`:
+//!        GET /api/health  — liveness probe
+//!        GET /api/stats   — JSON array of per-port packet counts
+//!   4. Shut down cleanly on Ctrl-C.
+
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use aya::{
     maps::PerCpuHashMap,
     programs::{Xdp, XdpFlags},
@@ -10,19 +22,24 @@ use aya_log::EbpfLogger;
 use clap::Parser;
 use log::{info, warn};
 use packet_counter_common::{PortKey, PROTO_TCP, PROTO_UDP};
-use tokio::{signal, time};
+use serde::Serialize;
+use tokio::{signal, sync::RwLock, time};
+use tower_http::cors::{Any, CorsLayer};
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
 
 /// eBPF packet counter — attaches an XDP program to a network interface,
-/// counts packets per destination port (TCP + UDP), and prints per-port
-/// statistics to stdout every second.
+/// counts packets per destination port (TCP + UDP), and exposes a REST API.
 ///
 /// Communication with the eBPF program happens through a `PerCpuHashMap`
-/// BPF map named `PACKET_COUNTS`.  The XDP program increments a per-CPU
-/// counter for each `(protocol, dst_port)` pair it observes.  Userspace
-/// reads the map on demand and sums the per-CPU values to get the total.
+/// BPF map named `PACKET_COUNTS`.  A background task reads the map every
+/// second and caches aggregated stats.  The Axum HTTP server serves the
+/// cached stats via `GET /api/stats`.
 #[derive(Debug, Parser)]
 struct Opt {
-    /// Network interface to attach to (e.g. eth0, lo, ens3)
+    /// Network interface to attach to (e.g. eth0, lo, ens3).
     #[clap(short, long, default_value = "eth0")]
     iface: String,
 
@@ -34,10 +51,37 @@ struct Opt {
     #[clap(long)]
     skb_mode: bool,
 
-    /// How often (in seconds) to print the stats table to stdout.
+    /// How often (in seconds) to refresh the stats cache from the BPF map.
     #[clap(long, default_value = "1")]
     interval: u64,
+
+    /// Address the HTTP server listens on.
+    #[clap(long, default_value = "0.0.0.0:3001")]
+    listen: SocketAddr,
 }
+
+// ---------------------------------------------------------------------------
+// Shared state
+// ---------------------------------------------------------------------------
+
+/// A single row returned by `GET /api/stats`.
+#[derive(Debug, Clone, Serialize)]
+pub struct StatEntry {
+    /// Human-readable protocol name: `"tcp"` or `"udp"`.
+    pub protocol: String,
+    /// Destination port number (host byte order).
+    pub port: u16,
+    /// Total packet count (sum across all CPUs).
+    pub count: u64,
+}
+
+/// Stats snapshot shared between the background refresh task and the HTTP
+/// handlers via `Arc<RwLock<>>`.
+type SharedStats = Arc<RwLock<Vec<StatEntry>>>;
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -54,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     )))?;
 
     // -----------------------------------------------------------------------
-    // Wire up aya-log so that aya_log_ebpf messages are forwarded to log/env_logger.
+    // Wire up aya-log so that aya_log_ebpf messages are forwarded to log.
     // -----------------------------------------------------------------------
     if let Err(e) = EbpfLogger::init(&mut bpf) {
         warn!("Failed to initialise eBPF logger: {}", e);
@@ -83,48 +127,90 @@ async fn main() -> anyhow::Result<()> {
     program.attach(&opt.iface, xdp_flags).with_context(|| {
         format!(
             "Failed to attach XDP program to '{}' in {} mode. \
-                 If the driver does not support native XDP, retry with --skb-mode.",
+             If the driver does not support native XDP, retry with --skb-mode.",
             opt.iface,
             if opt.skb_mode { "SKB" } else { "native" }
         )
     })?;
 
     info!(
-        "XDP program attached to '{}'. Printing stats every {}s. Press Ctrl-C to stop.",
+        "XDP program attached to '{}'. Refreshing stats every {}s.",
         opt.iface, opt.interval
     );
 
     // -----------------------------------------------------------------------
-    // Periodic stats loop — reads the PerCpuHashMap, sums per-CPU values,
-    // and prints a sorted table.  Runs until Ctrl-C.
+    // Shared stats cache — written by the background task, read by HTTP
+    // handlers.
     // -----------------------------------------------------------------------
-    let mut interval = time::interval(Duration::from_secs(opt.interval));
+    let shared_stats: SharedStats = Arc::new(RwLock::new(Vec::new()));
 
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                print_stats(&bpf);
-            }
-            _ = signal::ctrl_c() => {
-                info!("Received Ctrl-C, detaching and exiting.");
-                break;
-            }
+    // -----------------------------------------------------------------------
+    // Background task: periodically reads the BPF map and updates the cache.
+    // -----------------------------------------------------------------------
+    let stats_writer = Arc::clone(&shared_stats);
+    let refresh_interval = Duration::from_secs(opt.interval);
+
+    tokio::spawn(async move {
+        let mut ticker = time::interval(refresh_interval);
+        loop {
+            ticker.tick().await;
+            let entries = read_stats(&bpf);
+            *stats_writer.write().await = entries;
         }
-    }
+    });
 
+    // -----------------------------------------------------------------------
+    // Axum HTTP server
+    // -----------------------------------------------------------------------
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    let app = Router::new()
+        .route("/api/health", get(health_handler))
+        .route("/api/stats", get(stats_handler))
+        .with_state(Arc::clone(&shared_stats))
+        .layer(cors);
+
+    info!("HTTP server listening on {}", opt.listen);
+
+    let listener = tokio::net::TcpListener::bind(opt.listen)
+        .await
+        .with_context(|| format!("Failed to bind to {}", opt.listen))?;
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("Axum server error")?;
+
+    info!("Shutdown complete.");
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Graceful-shutdown signal handler
+// ---------------------------------------------------------------------------
+
+async fn shutdown_signal() {
+    signal::ctrl_c()
+        .await
+        .expect("failed to install Ctrl-C handler");
+    info!("Received Ctrl-C, shutting down.");
+}
+
+// ---------------------------------------------------------------------------
+// BPF map reader
+// ---------------------------------------------------------------------------
+
 /// Read `PACKET_COUNTS` from the BPF map, aggregate per-CPU values, and
-/// print a sorted stats table to stdout.
-fn print_stats(bpf: &Ebpf) {
-    // Borrow the map.  Returns None if the map name doesn't exist — shouldn't
-    // happen if the eBPF program was loaded correctly.
+/// return a sorted Vec of `StatEntry`.
+fn read_stats(bpf: &Ebpf) -> Vec<StatEntry> {
     let map = match bpf.map("PACKET_COUNTS") {
         Some(m) => m,
         None => {
             warn!("PACKET_COUNTS map not found");
-            return;
+            return Vec::new();
         }
     };
 
@@ -132,38 +218,52 @@ fn print_stats(bpf: &Ebpf) {
         Ok(m) => m,
         Err(e) => {
             warn!("Failed to open PACKET_COUNTS map: {}", e);
-            return;
+            return Vec::new();
         }
     };
 
-    // Collect and sum per-CPU values for each key.
-    let mut entries: Vec<(PortKey, u64)> = counts
+    let mut entries: Vec<StatEntry> = counts
         .iter()
         .filter_map(|result| {
             let (key, per_cpu_values) = result.ok()?;
-            // Sum across all CPUs.
             let total: u64 = per_cpu_values.iter().sum();
-            Some((key, total))
+            let protocol = match key.protocol {
+                p if p == PROTO_TCP => "tcp".to_string(),
+                p if p == PROTO_UDP => "udp".to_string(),
+                other => format!("proto_{}", other),
+            };
+            Some(StatEntry {
+                protocol,
+                port: key.port,
+                count: total,
+            })
         })
         .collect();
 
-    if entries.is_empty() {
-        info!("No packets counted yet.");
-        return;
-    }
+    // Sort by count descending, then port ascending for stable output.
+    entries.sort_unstable_by(|a, b| b.count.cmp(&a.count).then(a.port.cmp(&b.port)));
+    entries
+}
 
-    // Sort by count descending, then by port ascending for stable output.
-    entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.port.cmp(&b.0.port)));
+// ---------------------------------------------------------------------------
+// HTTP handlers
+// ---------------------------------------------------------------------------
 
-    println!("\n{:<10} {:<8} {:>15}", "PROTOCOL", "PORT", "PACKETS");
-    println!("{}", "-".repeat(35));
-    for (key, count) in &entries {
-        let proto = match key.protocol {
-            p if p == PROTO_TCP => "TCP",
-            p if p == PROTO_UDP => "UDP",
-            _ => "OTHER",
-        };
-        println!("{:<10} {:<8} {:>15}", proto, key.port, count);
-    }
-    println!();
+/// `GET /api/health` — simple liveness probe.
+async fn health_handler() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+}
+
+/// `GET /api/stats` — returns a JSON array of per-port packet counts.
+///
+/// Response shape (array):
+/// ```json
+/// [
+///   { "protocol": "tcp", "port": 443, "count": 1024 },
+///   { "protocol": "udp", "port": 53,  "count":  300 }
+/// ]
+/// ```
+async fn stats_handler(State(stats): State<SharedStats>) -> impl IntoResponse {
+    let snapshot = stats.read().await;
+    (StatusCode::OK, Json(snapshot.clone()))
 }

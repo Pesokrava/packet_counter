@@ -28,8 +28,9 @@ help:
 	@echo "    make check       cargo check (fast, no codegen)"
 	@echo "    make fmt         Run rustfmt across the workspace"
 	@echo "    make lint        Run clippy across the workspace"
-	@echo "    make run         Build and run with sudo (requires root/CAP_BPF)"
-	@echo "    make run IFACE=ens3 SKB=1   Run on a specific interface in SKB mode"
+	@echo "    make run         Build and run with sudo (requires root/CAP_BPF); HTTP API on :3001"
+	@echo "    make run IFACE=ens3 SKB=1        Run on a specific interface in SKB mode"
+	@echo "    make run PORT=8080               Override the HTTP listen port"
 	@echo "    make clean       Remove build artifacts"
 	@echo ""
 
@@ -87,19 +88,24 @@ fmt:
 lint:
 	cargo clippy --target $(TARGET) -p packet-counter -p packet-counter-common -- -D warnings
 
+# HTTP listen address (override with: make run PORT=8080)
+PORT ?= 3001
+
 # Build and run with privilege escalation (required for BPF + XDP attach).
 # The run-privileged.sh wrapper passes only RUST_LOG and RUST_BACKTRACE to sudo.
 run: build
 	./run-privileged.sh \
 		"$${CARGO_TARGET_DIR:-target}/$(TARGET)/debug/packet-counter" \
-		--iface $(IFACE) $(SKB_FLAG)
+		--iface $(IFACE) $(SKB_FLAG) \
+		--listen "0.0.0.0:$(PORT)"
 
 # Build in release mode and run.
 run-release:
 	cargo build --release --target $(TARGET) -p packet-counter
 	./run-privileged.sh \
 		"$${CARGO_TARGET_DIR:-target}/$(TARGET)/release/packet-counter" \
-		--iface $(IFACE) $(SKB_FLAG)
+		--iface $(IFACE) $(SKB_FLAG) \
+		--listen "0.0.0.0:$(PORT)"
 
 # ---------------------------------------------------------------------------
 # Clean
