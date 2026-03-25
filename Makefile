@@ -11,7 +11,7 @@
 #   (inside VM) make run
 # =============================================================================
 
-.PHONY: help vm-up vm-shell vm-down vm-destroy build build-ebpf check fmt lint run clean
+.PHONY: help vm-up vm-shell vm-down vm-destroy build build-ebpf build-web build-all check fmt lint run run-release dev clean
 
 # Default target
 help:
@@ -25,13 +25,16 @@ help:
 	@echo ""
 	@echo "  Build & run (run inside the Lima VM):"
 	@echo "    make build       Build the userspace binary (embeds eBPF)"
+	@echo "    make build-web   Build the React frontend (outputs to web/dist/)"
+	@echo "    make build-all   Build frontend then Rust binary (sequentially)"
 	@echo "    make check       cargo check (fast, no codegen)"
 	@echo "    make fmt         Run rustfmt across the workspace"
 	@echo "    make lint        Run clippy across the workspace"
-	@echo "    make run         Build and run with sudo (requires root/CAP_BPF); HTTP API on :3001"
+	@echo "    make run         Build and run with sudo; passes --static-dir web/dist if it exists"
 	@echo "    make run IFACE=ens3 SKB=1        Run on a specific interface in SKB mode"
 	@echo "    make run PORT=8080               Override the HTTP listen port"
-	@echo "    make clean       Remove build artifacts"
+	@echo "    make dev         Run Vite dev server + Rust backend concurrently"
+	@echo "    make clean       Remove build artifacts and web/dist/"
 	@echo ""
 
 # ---------------------------------------------------------------------------
@@ -93,11 +96,18 @@ PORT ?= 3001
 
 # Build and run with privilege escalation (required for BPF + XDP attach).
 # The run-privileged.sh wrapper passes only RUST_LOG and RUST_BACKTRACE to sudo.
+# If web/dist/ exists (i.e. frontend has been built), serve it via --static-dir.
+STATIC_DIR_FLAG :=
+ifneq ($(wildcard web/dist/index.html),)
+  STATIC_DIR_FLAG := --static-dir web/dist
+endif
+
 run: build
 	./run-privileged.sh \
 		"$${CARGO_TARGET_DIR:-target}/$(TARGET)/debug/packet-counter" \
 		--iface $(IFACE) $(SKB_FLAG) \
-		--listen "0.0.0.0:$(PORT)"
+		--listen "0.0.0.0:$(PORT)" \
+		$(STATIC_DIR_FLAG)
 
 # Build in release mode and run.
 run-release:
@@ -105,7 +115,34 @@ run-release:
 	./run-privileged.sh \
 		"$${CARGO_TARGET_DIR:-target}/$(TARGET)/release/packet-counter" \
 		--iface $(IFACE) $(SKB_FLAG) \
-		--listen "0.0.0.0:$(PORT)"
+		--listen "0.0.0.0:$(PORT)" \
+		$(STATIC_DIR_FLAG)
+
+# ---------------------------------------------------------------------------
+# Frontend build
+# ---------------------------------------------------------------------------
+
+# Build the React SPA. Output goes to web/dist/.
+build-web:
+	cd web && npm install && npm run build
+
+# Build frontend first, then the Rust binary. No Cargo/build.rs coupling —
+# the frontend is a pure Makefile prerequisite.
+build-all: build-web build
+
+# ---------------------------------------------------------------------------
+# Dev mode (frontend proxies /api to the Rust backend on :3001)
+# ---------------------------------------------------------------------------
+
+# Run the Vite dev server and the Rust backend concurrently.
+# The Vite proxy config (web/vite.config.ts) forwards /api requests to :3001.
+# Press Ctrl-C to stop both processes.
+dev: build
+	./run-privileged.sh \
+		"$${CARGO_TARGET_DIR:-target}/$(TARGET)/debug/packet-counter" \
+		--iface $(IFACE) $(SKB_FLAG) \
+		--listen "0.0.0.0:$(PORT)" &
+	cd web && npm run dev
 
 # ---------------------------------------------------------------------------
 # Clean
@@ -113,5 +150,6 @@ run-release:
 
 clean:
 	cargo clean
+	rm -rf web/dist
 	@echo "Note: VM-local build cache at /var/tmp/cargo-target/ is not removed."
 	@echo "      To clear it: rm -rf /var/tmp/cargo-target/packet-counter"

@@ -7,9 +7,10 @@
 //!   3. Serve an Axum HTTP API on `0.0.0.0:3001`:
 //!        GET /api/health  — liveness probe
 //!        GET /api/stats   — JSON array of per-port packet counts
-//!   4. Shut down cleanly on Ctrl-C.
+//!   4. Optionally serve a pre-built React SPA from a runtime `--static-dir` path.
+//!   5. Shut down cleanly on Ctrl-C.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
@@ -24,7 +25,10 @@ use log::{info, warn};
 use packet_counter_common::{PortKey, PROTO_TCP, PROTO_UDP};
 use serde::Serialize;
 use tokio::{signal, sync::RwLock, time};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    services::{ServeDir, ServeFile},
+};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -58,6 +62,17 @@ struct Opt {
     /// Address the HTTP server listens on.
     #[clap(long, default_value = "0.0.0.0:3001")]
     listen: SocketAddr,
+
+    /// Optional path to a pre-built React SPA directory (e.g. `web/dist`).
+    ///
+    /// When provided, the server mounts `tower_http::services::ServeDir` at `/`
+    /// with an SPA fallback to `index.html` so that React Router works correctly.
+    /// All `/api/*` routes still take precedence.
+    ///
+    /// When omitted, the binary operates as a pure API server — no change to
+    /// existing behaviour.
+    #[clap(long)]
+    static_dir: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -167,11 +182,27 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    // API routes always take precedence.
+    let api_router = Router::new()
         .route("/api/health", get(health_handler))
         .route("/api/stats", get(stats_handler))
         .with_state(Arc::clone(&shared_stats))
         .layer(cors);
+
+    // Optionally serve the pre-built React SPA from a runtime directory.
+    let app: Router = if let Some(ref dir) = opt.static_dir {
+        let index = dir.join("index.html");
+        let serve_dir = ServeDir::new(dir).not_found_service(ServeFile::new(&index));
+        info!(
+            "Serving static files from '{}' with SPA fallback to '{}'",
+            dir.display(),
+            index.display()
+        );
+        // API routes are nested first so they shadow any static files at /api/*.
+        api_router.fallback_service(serve_dir)
+    } else {
+        api_router
+    };
 
     info!("HTTP server listening on {}", opt.listen);
 
