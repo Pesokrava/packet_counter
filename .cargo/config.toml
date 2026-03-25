@@ -1,0 +1,20 @@
+# The runner invokes a minimal wrapper script that passes only the specific env
+# vars the binary needs (RUST_LOG, RUST_BACKTRACE) into the privileged context.
+# This avoids the security footgun of `sudo -E` which forwards the entire
+# ambient environment (credentials, tokens, proxy settings, etc.).
+[target.x86_64-unknown-linux-musl]
+runner = "./run-privileged.sh"
+
+[target.aarch64-unknown-linux-musl]
+runner = "./run-privileged.sh"
+
+[target.x86_64-unknown-linux-gnu]
+runner = "./run-privileged.sh"
+
+[target.aarch64-unknown-linux-gnu]
+runner = "./run-privileged.sh"
+
+# BPF target: use bpf-linker (installed via cargo install bpf-linker)
+[target.bpfel-unknown-none]
+linker    = "bpf-linker"
+rustflags = ["-C", "link-arg=--btf"]

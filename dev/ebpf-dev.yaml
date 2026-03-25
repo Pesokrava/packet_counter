@@ -1,0 +1,283 @@
+# =============================================================================
+# ebpf-dev.yaml — Lima VM for eBPF / Aya development on macOS
+#
+# Creates a native ARM64 Ubuntu 24.04 VM with the full Rust + bpf-linker
+# toolchain, Node.js (for the React frontend), and standard dev tools
+# (neovim, lazygit, opencode, fzf, etc.) pre-installed.
+#
+# Source code lives on the macOS filesystem (accessed via VirtioFS at the same
+# absolute path), while cargo build artifacts are written to a VM-local
+# directory for fast I/O.
+#
+# Usage:
+#   make vm-up       # create and start the VM (first-time: ~3-5 min)
+#   make vm-shell    # open an interactive shell inside the VM
+#   make vm-down     # stop the VM, preserving disk state
+#   make vm-destroy  # stop + permanently delete the VM
+#
+# Direct limactl usage:
+#   limactl start ./dev/ebpf-dev.yaml --name=packet-counter-dev
+#   limactl shell packet-counter-dev
+#
+# Prerequisites (one-time on macOS):
+#   Create ~/.env.llm with your LLM API key exports, e.g.:
+#     export ANTHROPIC_API_KEY=sk-ant-...
+#     export OPENAI_API_KEY=sk-...
+#   Add to ~/.zshrc:
+#     source ~/.env.llm
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# VM engine — Apple Virtualization.framework, native ARM64 on Apple Silicon.
+# ---------------------------------------------------------------------------
+vmType: "vz"
+
+# ---------------------------------------------------------------------------
+# Mount type — VirtioFS gives near-native filesystem performance.
+# ---------------------------------------------------------------------------
+mountType: "virtiofs"
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+cpus: 4
+memory: "8GiB"
+disk: "50GiB"
+
+# ---------------------------------------------------------------------------
+# OS image — Ubuntu 24.04 LTS (Noble Numbat), ARM64 cloud image.
+# ---------------------------------------------------------------------------
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+# ---------------------------------------------------------------------------
+# Mounts — expose the macOS home directory inside the VM at the same absolute
+# path. writable: true is required so neovim, git, and cargo can write files.
+# ---------------------------------------------------------------------------
+mounts:
+  - location: "~"
+    writable: true
+
+# ---------------------------------------------------------------------------
+# SSH — enable agent forwarding so git push/pull works inside the VM.
+# ---------------------------------------------------------------------------
+ssh:
+  forwardAgent: true
+
+# ---------------------------------------------------------------------------
+# Rosetta — allows the VM to run x86_64 binaries. No effect on Intel Macs.
+# ---------------------------------------------------------------------------
+vmOpts:
+  vz:
+    rosetta:
+      enabled: true
+      binfmt: true
+
+# ---------------------------------------------------------------------------
+# System provisioning (runs as root at first boot via cloud-init)
+# ---------------------------------------------------------------------------
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euxo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+
+      apt-get update -qq
+
+      # Core build tools
+      apt-get install -y --no-install-recommends \
+        build-essential \
+        pkg-config \
+        clang \
+        llvm \
+        libelf-dev \
+        zlib1g-dev \
+        libssl-dev \
+        libbpf-dev
+
+      # Kernel headers & eBPF tools
+      apt-get install -y --no-install-recommends \
+        "linux-headers-$(uname -r)" \
+        linux-tools-common \
+        "linux-tools-$(uname -r)" \
+        iproute2 \
+        tcpdump \
+        bpftrace
+
+      # General utilities
+      apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        unzip \
+        jq \
+        ripgrep \
+        fd-find \
+        tree \
+        tmux \
+        netcat-openbsd
+
+      # -----------------------------------------------------------------------
+      # Node.js — install via NodeSource (LTS) for the React frontend
+      # -----------------------------------------------------------------------
+      curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+      apt-get install -y --no-install-recommends nodejs
+
+      # -----------------------------------------------------------------------
+      # fzf — install latest from GitHub (apt ships an outdated version)
+      # -----------------------------------------------------------------------
+      FZF_VERSION=$(curl -s https://api.github.com/repos/junegunn/fzf/releases/latest \
+        | jq -r '.tag_name | ltrimstr("v")')
+      curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_arm64.tar.gz" \
+        | tar -C /usr/local/bin -xz fzf
+      echo "fzf ${FZF_VERSION} installed."
+
+      # -----------------------------------------------------------------------
+      # StyLua — Lua formatter used by LazyVim
+      # -----------------------------------------------------------------------
+      STYLUA_VERSION=$(curl -s https://api.github.com/repos/JohnnyMorganz/StyLua/releases/latest \
+        | jq -r '.tag_name')
+      curl -fsSL "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VERSION}/stylua-linux-aarch64.zip" \
+        -o /tmp/stylua.zip
+      unzip -q /tmp/stylua.zip -d /usr/local/bin/
+      chmod +x /usr/local/bin/stylua
+      rm /tmp/stylua.zip
+
+      # -----------------------------------------------------------------------
+      # lazygit — used by LazyVim's built-in git UI
+      # -----------------------------------------------------------------------
+      LAZYGIT_VERSION=$(curl -s https://api.github.com/repos/jesseduffield/lazygit/releases/latest \
+        | jq -r '.tag_name | ltrimstr("v")')
+      curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_arm64.tar.gz" \
+        -o /tmp/lazygit.tar.gz
+      tar -C /usr/local/bin -xzf /tmp/lazygit.tar.gz lazygit
+      rm /tmp/lazygit.tar.gz
+
+      # -----------------------------------------------------------------------
+      # Neovim — install latest stable from GitHub releases
+      # -----------------------------------------------------------------------
+      NVIM_VERSION=$(curl -s https://api.github.com/repos/neovim/neovim/releases/latest \
+        | jq -r '.tag_name')
+      if [ -n "${NVIM_VERSION}" ] && \
+         curl -fsSL "https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-arm64.tar.gz" \
+           -o /tmp/nvim.tar.gz 2>/dev/null; then
+        tar -C /opt -xzf /tmp/nvim.tar.gz
+        ln -sf /opt/nvim-linux-arm64/bin/nvim /usr/local/bin/nvim
+        rm /tmp/nvim.tar.gz
+        echo "Neovim ${NVIM_VERSION} installed from GitHub."
+      else
+        echo "GitHub download failed — falling back to apt neovim."
+        add-apt-repository -y ppa:neovim-ppa/unstable
+        apt-get update -qq
+        apt-get install -y --no-install-recommends neovim
+      fi
+      nvim --version | head -1
+
+      # Make cargo-installed binaries available system-wide for sudo invocations
+      # (bpf-linker is installed as the user but must be on root's PATH)
+      echo 'export PATH="/home/$SUDO_USER/.cargo/bin:$PATH"' \
+        > /etc/profile.d/cargo.sh
+
+  # ---------------------------------------------------------------------------
+  # User provisioning (runs as the default user at first boot)
+  # ---------------------------------------------------------------------------
+  - mode: user
+    script: |
+      #!/bin/bash
+      set -euxo pipefail
+
+      # Derive the macOS home path from the VirtioFS mount.
+      MACOS_HOME=$(ls /Users/ | head -1); MACOS_HOME="/Users/${MACOS_HOME}"
+      PROJECT_DIR="${MACOS_HOME}/home_projs/packet_counter"
+
+      # -----------------------------------------------------------------------
+      # 1. Rust toolchain via rustup
+      # -----------------------------------------------------------------------
+      if ! command -v rustup &>/dev/null; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y \
+              --default-toolchain nightly \
+              --profile minimal \
+              --no-modify-path
+      fi
+
+      source "$HOME/.cargo/env"
+
+      # Ensure nightly is default and has rust-src (needed by aya-build's
+      # -Z build-std=core for the bpfel-unknown-none target)
+      rustup toolchain install nightly --component rust-src --profile minimal
+      rustup toolchain install stable  --profile minimal
+      rustup default nightly
+
+      # aarch64-unknown-linux-gnu target for cross-compiling the userspace binary
+      rustup target add aarch64-unknown-linux-gnu
+
+      # -----------------------------------------------------------------------
+      # 2. bpf-linker — native Linux install (no --no-default-features needed)
+      # -----------------------------------------------------------------------
+      cargo install bpf-linker
+
+      # -----------------------------------------------------------------------
+      # 3. OpenCode
+      # -----------------------------------------------------------------------
+      curl -fsSL https://opencode.ai/install | bash
+
+      # -----------------------------------------------------------------------
+      # 4. rust-analyzer — via rustup for the nightly toolchain
+      # -----------------------------------------------------------------------
+      rustup component add rust-analyzer
+
+      # -----------------------------------------------------------------------
+      # 5. Shell profile — append to ~/.bashrc (idempotent via guard comment)
+      # -----------------------------------------------------------------------
+      if ! grep -q '# >>> packet-counter-dev <<<' "$HOME/.bashrc" 2>/dev/null; then
+        printf '%s\n' \
+          '' \
+          '# >>> packet-counter-dev <<<' \
+          '# Added by dev/ebpf-dev.yaml — Lima eBPF dev environment for packet_counter' \
+          '' \
+          '# Rust / cargo' \
+          'source "$HOME/.cargo/env"' \
+          '' \
+          '# Redirect cargo build artifacts to VM-local storage so that incremental' \
+          '# compilation never pays VirtioFS overhead.' \
+          'export CARGO_TARGET_DIR="/var/tmp/cargo-target/packet-counter"' \
+          '' \
+          '# Default log level — override per-invocation with RUST_LOG=debug' \
+          'export RUST_LOG="${RUST_LOG:-info}"' \
+          '' \
+          '# LLM API keys from macOS-side file accessible via VirtioFS.' \
+          "[ -f \"${MACOS_HOME}/.env.llm\" ] && source \"${MACOS_HOME}/.env.llm\"" \
+          '' \
+          '# Vim motions in bash' \
+          'set -o vi' \
+          '' \
+          '# Start in the project directory' \
+          "[ -d \"${PROJECT_DIR}\" ] && cd \"${PROJECT_DIR}\"" \
+          'export LIMA_INSTANCE=yes' \
+          'alias vi="nvim"' \
+          'export EDITOR=nvim' \
+          '# <<< packet-counter-dev <<<' \
+          >> "$HOME/.bashrc"
+      fi
+
+      echo ""
+      echo "============================================================"
+      echo "  packet-counter-dev VM provisioned successfully."
+      echo ""
+      echo "  Toolchain:"
+      rustup show active-toolchain 2>/dev/null || true
+      echo "  bpf-linker:    $(bpf-linker --version 2>/dev/null || echo 'installed')"
+      echo "  rust-analyzer: $(rust-analyzer --version 2>/dev/null || echo 'installed via rustup')"
+      echo "  neovim:        $(nvim --version 2>/dev/null | head -1 || echo 'installed')"
+      echo "  opencode:      $(opencode --version 2>/dev/null || echo 'installed')"
+      echo "  lazygit:       $(lazygit --version 2>/dev/null | head -1 || echo 'installed')"
+      echo "  node:          $(node --version 2>/dev/null || echo 'installed')"
+      echo "  npm:           $(npm --version 2>/dev/null || echo 'installed')"
+      echo ""
+      echo "  Usage:"
+      echo "    make vm-shell   — enter the VM"
+      echo "    make build      — build the project inside the VM"
+      echo "    make run        — build and run (requires sudo)"
+      echo "============================================================"
