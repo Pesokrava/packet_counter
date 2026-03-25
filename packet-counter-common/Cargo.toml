@@ -3,3 +3,12 @@ name    = "packet-counter-common"
 version = "0.1.0"
 edition = "2021"
 publish = false
+
+# The "userspace" feature gates the `aya::Pod` impl and any std-only code.
+# It must NOT be enabled when building for the bpfel-unknown-none target.
+[features]
+userspace = ["dep:aya"]
+
+[dependencies]
+# Only pulled in when the "userspace" feature is active (i.e. not in the eBPF crate).
+aya = { workspace = true, optional = true }

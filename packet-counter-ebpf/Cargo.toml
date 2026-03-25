@@ -5,8 +5,9 @@ edition = "2021"
 publish = false
 
 [dependencies]
-aya-ebpf     = { workspace = true }
-aya-log-ebpf = { workspace = true }
+aya-ebpf              = { workspace = true }
+aya-log-ebpf          = { workspace = true }
+network-types         = { workspace = true }
 packet-counter-common = { path = "../packet-counter-common" }
 
 [[bin]]
